@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tutorial 1 - Assignment 1 Walkthrough</title>
+  <style>
+  @import url("https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.9.0-alpha2/katex.min.css");
+
+  body {
+    font-family: Georgia, Cambria, serif;
+    font-size: 14px;
+    line-height: 1.7;
+    color: #373D49;
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 2rem;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: "Source Sans Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-weight: 600;
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+  }
+  h1 { font-size: 2em; }
+  h2 { font-size: 1.5em; }
+  h3 { font-size: 1.25em; }
+  a { color: #35D7BB; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: "Ubuntu Mono", Monaco, monospace;
+    background: #F5F7FA;
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+  }
+  pre {
+    background: #F5F7FA;
+    padding: 1em;
+    border-radius: 3px;
+    overflow-x: auto;
+  }
+  .hljs {
+    display: block;
+    overflow-x: auto;
+    padding: 0;
+    color: #333;
+  }
+  pre code { background: none; padding: 0; }
+  blockquote {
+    border-left: 3px solid #A0AABF;
+    padding-left: 1em;
+    margin-left: 0;
+    font-style: italic;
+    color: #666;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  th, td {
+    border: 1px solid #E8E8E8;
+    padding: 0.5em;
+    text-align: left;
+  }
+  th {
+    background: #F5F7FA;
+    font-weight: 600;
+  }
+  #preview .table {
+    width: auto;
+  }
+  img {
+    max-width: 100%;
+    height: auto;
+  }
+  .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+</style>
+</head>
+<body id="preview">
+<h1 class="code-line has-line-data" data-line-start="0" data-line-end="1"><a id="Tutorial_1_Practical_Reference_Guide_0"></a>Tutorial 1 - Practical Reference Guide</h1>
+<p class="has-line-data" data-line-start="1" data-line-end="5"><strong>Trustworthy Machine Learning 2026</strong><br>
+<strong>Supervisors: Adam Dziedzic and Franziska Boenisch</strong><br>
+Teaching Assistants: Maitri Shah and Nima DindarSafa<br>
+April 22, 2026</p>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="8" data-line-end="9"><a id="1_The_Task_Membership_Inference_Attack_8"></a>1. The Task: Membership Inference Attack</h2>
+<h3 class="code-line has-line-data" data-line-start="10" data-line-end="11"><a id="What_is_the_goal_10"></a>What is the goal?</h3>
+<p class="has-line-data" data-line-start="12" data-line-end="13">Determine for each sample in the <strong>private dataset</strong> whether it was part of the model’s training data (member) or not (non-member).</p>
+<h3 class="code-line has-line-data" data-line-start="14" data-line-end="15"><a id="Why_is_this_possible_14"></a>Why is this possible?</h3>
+<p class="has-line-data" data-line-start="16" data-line-end="17">Models memorize their training data to some degree. This leaks through the model’s outputs. Members produce high-confidence, peaked distributions while non-members produce flatter, more uncertain ones:</p>
+<pre><code class="has-line-data" data-line-start="19" data-line-end="22">Member:     [0.01, 0.95, 0.02, 0.02]  # peaked, high confidence
+Non-member: [0.20, 0.48, 0.18, 0.14]  # flat, low confidence
+</code></pre>
+<h3 class="code-line has-line-data" data-line-start="23" data-line-end="24"><a id="What_do_you_submit_23"></a>What do you submit?</h3>
+<p class="has-line-data" data-line-start="25" data-line-end="26"><strong>Not binary labels (0 or 1).</strong> You submit a continuous <strong>confidence score</strong> per sample, a float reflecting how likely you think it is a member. Higher score = more member-like.</p>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="29" data-line-end="30"><a id="2_PyTorch_Essentials_29"></a>2. PyTorch Essentials</h2>
+<h3 class="code-line has-line-data" data-line-start="31" data-line-end="32"><a id="Loading_the_Model_31"></a>Loading the Model</h3>
+<pre><code class="has-line-data language-python" data-line-start="34" data-line-end="47"><span class="hljs-keyword">import</span> torch
+<span class="hljs-keyword">from</span> torchvision.models <span class="hljs-keyword">import</span> resnet18
+
+model = resnet18(weights=<span class="hljs-literal">None</span>)
+model.conv1 = torch.nn.Conv2d(<span class="hljs-number">3</span>, <span class="hljs-number">64</span>, kernel_size=<span class="hljs-number">3</span>, stride=<span class="hljs-number">1</span>, padding=<span class="hljs-number">1</span>, bias=<span class="hljs-literal">False</span>)  <span class="hljs-comment"># small images</span>
+model.maxpool = torch.nn.Identity()   <span class="hljs-comment"># remove maxpool</span>
+model.fc = torch.nn.Linear(<span class="hljs-number">512</span>, <span class="hljs-number">9</span>)   <span class="hljs-comment"># 9 classes</span>
+model.load_state_dict(torch.load(<span class="hljs-string">&quot;model.pt&quot;</span>, map_location=<span class="hljs-string">&quot;cpu&quot;</span>))
+model.<span class="hljs-built_in">eval</span>()                          <span class="hljs-comment"># critical for inference</span>
+
+device = torch.device(<span class="hljs-string">&quot;cuda&quot;</span> <span class="hljs-keyword">if</span> torch.cuda.is_available() <span class="hljs-keyword">else</span> <span class="hljs-string">&quot;cpu&quot;</span>)
+model = model.to(device)
+</code></pre>
+<p class="has-line-data" data-line-start="48" data-line-end="50"><strong>Why <code>model.eval()</code>?</strong><br>
+ResNet18 uses BatchNorm layers. In training mode, BatchNorm computes statistics from the current batch. In eval mode, it uses the statistics learned during training. Forgetting <code>.eval()</code> gives you wrong outputs with no error message.</p>
+<p class="has-line-data" data-line-start="51" data-line-end="53"><strong>Why modify the architecture before loading weights?</strong><br>
+<code>torch.load</code> loads raw weight tensors. If the architecture does not match exactly, PyTorch will throw a size mismatch error. Always reconstruct the exact architecture first, then load the weights.</p>
+<p class="has-line-data" data-line-start="54" data-line-end="56"><strong>Moving to GPU with <code>.to(device)</code></strong><br>
+Both the model and the input tensors must be on the same device. Always move inputs inside the loop with <code>imgs.to(device)</code>.</p>
+<hr>
+<h3 class="code-line has-line-data" data-line-start="59" data-line-end="60"><a id="Normalization_59"></a>Normalization</h3>
+<pre><code class="has-line-data language-python" data-line-start="62" data-line-end="72"><span class="hljs-keyword">import</span> torchvision.transforms <span class="hljs-keyword">as</span> transforms
+
+MEAN = [<span class="hljs-number">0.7406</span>, <span class="hljs-number">0.5331</span>, <span class="hljs-number">0.7059</span>]   <span class="hljs-comment"># per-channel mean used during training</span>
+STD = [<span class="hljs-number">0.1491</span>, <span class="hljs-number">0.1864</span>, <span class="hljs-number">0.1301</span>]    <span class="hljs-comment"># per-channel std used during training</span>
+
+transform = transforms.Compose([
+    transforms.Resize(<span class="hljs-number">32</span>),                     <span class="hljs-comment"># resize to match training resolution</span>
+    transforms.Normalize(mean=MEAN, std=STD),  <span class="hljs-comment"># (pixel - mean) / std per channel</span>
+])
+</code></pre>
+<p class="has-line-data" data-line-start="73" data-line-end="74">Feeding un-normalized images means the model sees a completely different input distribution than it was trained on. It will produce wrong outputs with no warning.</p>
+<p class="has-line-data" data-line-start="75" data-line-end="77"><strong>Why attach the transform after loading?</strong><br>
+The dataset is saved as a raw Python object. The transform is not saved with it. If you forget to attach it after loading, images will be passed to the model un-normalized.</p>
+<hr>
+<h3 class="code-line has-line-data" data-line-start="80" data-line-end="81"><a id="Running_Inference_80"></a>Running Inference</h3>
+<pre><code class="has-line-data language-python" data-line-start="83" data-line-end="91"><span class="hljs-keyword">import</span> torch.nn.functional <span class="hljs-keyword">as</span> F
+
+<span class="hljs-keyword">with</span> torch.no_grad():                        <span class="hljs-comment"># disable gradient tracking</span>
+    logits = model(images)                   <span class="hljs-comment"># raw scores, shape: (batch, 9)</span>
+    probs = F.softmax(logits, dim=<span class="hljs-number">1</span>)         <span class="hljs-comment"># convert to probabilities, sums to 1</span>
+
+max_conf, predicted_class = probs.<span class="hljs-built_in">max</span>(dim=<span class="hljs-number">1</span>) <span class="hljs-comment"># highest probability and its class</span>
+</code></pre>
+<p class="has-line-data" data-line-start="92" data-line-end="94"><strong>Why <code>torch.no_grad()</code>?</strong><br>
+By default PyTorch builds a computation graph to track gradients for training. During inference you do not need this. Wrapping your forward pass in <code>torch.no_grad()</code> disables it, saving memory and speeding things up significantly.</p>
+<p class="has-line-data" data-line-start="95" data-line-end="97"><strong>Logits vs probabilities</strong><br>
+The model outputs raw unnormalized scores called logits. Softmax converts them into a proper probability distribution that sums to 1. Always apply softmax before interpreting the output as a confidence score.</p>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="100" data-line-end="101"><a id="3_Dataset_Classes_100"></a>3. Dataset Classes</h2>
+<pre><code class="has-line-data language-python" data-line-start="103" data-line-end="134"><span class="hljs-keyword">from</span> torch.utils.data <span class="hljs-keyword">import</span> Dataset
+<span class="hljs-keyword">from</span> typing <span class="hljs-keyword">import</span> <span class="hljs-type">Tuple</span>
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">TaskDataset</span>(<span class="hljs-title class_ inherited__">Dataset</span>):
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, transform=<span class="hljs-literal">None</span></span>):
+        <span class="hljs-variable language_">self</span>.ids = []           <span class="hljs-comment"># unique ID per sample</span>
+        <span class="hljs-variable language_">self</span>.imgs = []          <span class="hljs-comment"># raw images</span>
+        <span class="hljs-variable language_">self</span>.labels = []        <span class="hljs-comment"># class labels (0 to 8)</span>
+        <span class="hljs-variable language_">self</span>.transform = transform
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__getitem__</span>(<span class="hljs-params">self, index</span>) -&gt; <span class="hljs-type">Tuple</span>[<span class="hljs-built_in">int</span>, torch.Tensor, <span class="hljs-built_in">int</span>]:
+        id_ = <span class="hljs-variable language_">self</span>.ids[index]
+        img = <span class="hljs-variable language_">self</span>.imgs[index]
+        <span class="hljs-keyword">if</span> <span class="hljs-variable language_">self</span>.transform <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span>:
+            img = <span class="hljs-variable language_">self</span>.transform(img)   <span class="hljs-comment"># normalization applied here</span>
+        label = <span class="hljs-variable language_">self</span>.labels[index]
+        <span class="hljs-keyword">return</span> id_, img, label
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__len__</span>(<span class="hljs-params">self</span>):
+        <span class="hljs-keyword">return</span> <span class="hljs-built_in">len</span>(<span class="hljs-variable language_">self</span>.ids)
+
+
+<span class="hljs-keyword">class</span> <span class="hljs-title class_">MembershipDataset</span>(<span class="hljs-title class_ inherited__">TaskDataset</span>):
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__init__</span>(<span class="hljs-params">self, transform=<span class="hljs-literal">None</span></span>):
+        <span class="hljs-built_in">super</span>().__init__(transform)
+        <span class="hljs-variable language_">self</span>.membership = []    <span class="hljs-comment"># 1 = member, 0 = non-member, None = unknown</span>
+
+    <span class="hljs-keyword">def</span> <span class="hljs-title function_">__getitem__</span>(<span class="hljs-params">self, index</span>) -&gt; <span class="hljs-type">Tuple</span>[<span class="hljs-built_in">int</span>, torch.Tensor, <span class="hljs-built_in">int</span>, <span class="hljs-built_in">int</span>]:
+        id_, img, label = <span class="hljs-built_in">super</span>().__getitem__(index)
+        <span class="hljs-keyword">return</span> id_, img, label, <span class="hljs-variable language_">self</span>.membership[index]
+</code></pre>
+<ul>
+<li class="has-line-data" data-line-start="135" data-line-end="136"><strong>PUBLIC dataset</strong>: <code>membership</code> is <code>1</code> (member) or <code>0</code> (non-member). Ground truth is known.</li>
+<li class="has-line-data" data-line-start="136" data-line-end="138"><strong>PRIVATE dataset</strong>: <code>membership</code> is <code>None</code>. This is what you need to predict.</li>
+</ul>
+<p class="has-line-data" data-line-start="138" data-line-end="140"><strong>The dataset is already pre-loaded</strong><br>
+Unlike typical PyTorch datasets that load files from disk on the fly, this dataset has all images already stored in memory inside the <code>.pt</code> file. You do not need to worry about file paths for individual images.</p>
+<pre><code class="has-line-data language-python" data-line-start="142" data-line-end="152"><span class="hljs-keyword">from</span> torch.utils.data <span class="hljs-keyword">import</span> DataLoader
+
+pub_ds = torch.load(<span class="hljs-string">&quot;pub.pt&quot;</span>, weights_only=<span class="hljs-literal">False</span>)
+priv_ds = torch.load(<span class="hljs-string">&quot;priv.pt&quot;</span>, weights_only=<span class="hljs-literal">False</span>)
+
+pub_ds.transform = transform    <span class="hljs-comment"># attach normalization after loading</span>
+priv_ds.transform = transform
+
+loader = DataLoader(priv_ds, batch_size=<span class="hljs-number">64</span>, shuffle=<span class="hljs-literal">False</span>)
+</code></pre>
+<blockquote>
+<p class="has-line-data" data-line-start="153" data-line-end="154"><strong>Note:</strong> Use <code>Path(__file__).parent</code> to avoid path issues on the cluster:</p>
+<pre><code class="has-line-data language-python" data-line-start="155" data-line-end="160"><span class="hljs-keyword">from</span> pathlib <span class="hljs-keyword">import</span> Path
+BASE = Path(__file__).parent
+pub_ds = torch.load(BASE / <span class="hljs-string">&quot;pub.pt&quot;</span>, weights_only=<span class="hljs-literal">False</span>)
+priv_ds = torch.load(BASE / <span class="hljs-string">&quot;priv.pt&quot;</span>, weights_only=<span class="hljs-literal">False</span>)
+</code></pre>
+</blockquote>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="163" data-line-end="164"><a id="4_Naive_Approaches_Getting_Started_163"></a>4. Naive Approaches: Getting Started</h2>
+<p class="has-line-data" data-line-start="165" data-line-end="166">Two simple signals to get you started. Use the <strong>public dataset</strong> to compare them before submitting. Plot score distributions for members vs. non-members side by side. If they separate cleanly, your signal is strong.</p>
+<h3 class="code-line has-line-data" data-line-start="167" data-line-end="168"><a id="Signal_1_Maximum_Confidence_Score_167"></a>Signal 1: Maximum Confidence Score</h3>
+<p class="has-line-data" data-line-start="169" data-line-end="170">Members tend to produce a higher max softmax probability.</p>
+<pre><code class="has-line-data language-python" data-line-start="172" data-line-end="185">all_ids = []
+all_scores = []
+
+<span class="hljs-keyword">with</span> torch.no_grad():
+    <span class="hljs-keyword">for</span> id_, imgs, labels, _ <span class="hljs-keyword">in</span> loader:
+        imgs = imgs.to(device)
+        logits = model(imgs)
+        probs = F.softmax(logits, dim=<span class="hljs-number">1</span>)
+        scores = probs.<span class="hljs-built_in">max</span>(dim=<span class="hljs-number">1</span>).values.cpu().numpy()  <span class="hljs-comment"># max prob as membership score</span>
+
+        all_ids.extend(id_.tolist())
+        all_scores.extend(scores.tolist())
+</code></pre>
+<h3 class="code-line has-line-data" data-line-start="186" data-line-end="187"><a id="Signal_2_Negative_Loss_186"></a>Signal 2: Negative Loss</h3>
+<p class="has-line-data" data-line-start="188" data-line-end="189">Members tend to have lower cross-entropy loss because the model has fitted them well. Negate it so lower loss = higher score = more member-like.</p>
+<pre><code class="has-line-data language-python" data-line-start="191" data-line-end="204">criterion = torch.nn.CrossEntropyLoss(reduction=<span class="hljs-string">&quot;none&quot;</span>)  <span class="hljs-comment"># one loss value per sample</span>
+
+<span class="hljs-keyword">with</span> torch.no_grad():
+    <span class="hljs-keyword">for</span> id_, imgs, labels, _ <span class="hljs-keyword">in</span> loader:
+        imgs = imgs.to(device)
+        labels = labels.to(device)
+        logits = model(imgs)
+        loss = criterion(logits, labels).cpu().numpy()
+        scores = -loss      <span class="hljs-comment"># negate: lower loss = more member-like</span>
+
+        all_ids.extend(id_.tolist())
+        all_scores.extend(scores.tolist())
+</code></pre>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="207" data-line-end="208"><a id="5_Submission_207"></a>5. Submission</h2>
+<p class="has-line-data" data-line-start="209" data-line-end="210">The submission script is already provided in <code>task_template.py</code>. Three things to pay attention to:</p>
+<ol>
+<li class="has-line-data" data-line-start="211" data-line-end="212"><strong><code>API_KEY</code></strong> – replace <code>&quot;YOUR_API_KEY_HERE&quot;</code> with your team’s key from CMS. This is the only thing you must change.</li>
+<li class="has-line-data" data-line-start="212" data-line-end="213"><strong><code>TASK_ID</code></strong> – leave <code>&quot;01-mia&quot;</code> as is. Do not change it.</li>
+<li class="has-line-data" data-line-start="213" data-line-end="215"><strong>The random scores</strong> – replace <code>[random.random() for _ in ids]</code> with your actual membership confidence scores.</li>
+</ol>
+<p class="has-line-data" data-line-start="215" data-line-end="216">Everything else in the submission script works out of the box.</p>
+<hr>
+<h2 class="code-line has-line-data" data-line-start="219" data-line-end="220"><a id="Useful_Links_219"></a>Useful Links</h2>
+<table class="table table-striped table-bordered">
+<thead>
+<tr>
+<th>Resource</th>
+<th>Link</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Assignment files</td>
+<td><a href="https://huggingface.co/datasets/SprintML/tml26_task1">https://huggingface.co/datasets/SprintML/tml26_task1</a></td>
+</tr>
+<tr>
+<td>Leaderboard</td>
+<td><a href="http://35.192.205.84:80/leaderboard">http://35.192.205.84:80/leaderboard</a></td>
+</tr>
+<tr>
+<td>HTCondor docs</td>
+<td><a href="https://sic.link/condor">https://sic.link/condor</a></td>
+</tr>
+<tr>
+<td>HPC FAQ</td>
+<td><a href="https://wiki.cs.uni-saarland.de/en/HPC/faq">https://wiki.cs.uni-saarland.de/en/HPC/faq</a></td>
+</tr>
+<tr>
+<td>Job monitoring</td>
+<td><a href="https://hpc-monitoring.cs.uni-saarland.de">https://hpc-monitoring.cs.uni-saarland.de</a></td>
+</tr>
+</tbody>
+</table>
+
+</body>
+</html>
