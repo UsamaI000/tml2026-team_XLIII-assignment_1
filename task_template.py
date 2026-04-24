@@ -1,4 +1,5 @@
 import os
+import dotenv
 import sys
 import torch
 import pandas as pd
@@ -11,19 +12,21 @@ from torch.utils.data import Dataset
 from torchvision.models import resnet18
 import torchvision.transforms as transforms
 
+dotenv.load_dotenv()  # Load environment variables from .env file
 
 # config
 BASE = Path(__file__).parent
-PUB_PATH = BASE / "pub.pt"
-PRIV_PATH = BASE / "priv.pt"
-MODEL_PATH = BASE / "model.pt"
-OUTPUT_CSV = BASE / "submission.csv"
+PUB_PATH = BASE / "data/pub.pt"
+PRIV_PATH = BASE / "data/priv.pt"
+MODEL_PATH = BASE / "data/model.pt"
+OUTPUT_CSV = BASE / "data/submission.csv"
 
 BASE_URL = "http://34.63.153.158"   #DONOT CHANGE
-API_KEY = "YOUR_API_KEY_HERE"
+API_KEY = os.getenv("API_KEY")  #DONOT CHANGE
 TASK_ID = "01-mia"  #DONOT CHANGE
 
-
+print("API_KEY:", API_KEY)
+print("TASK_ID:", TASK_ID)
 
 # dataset classes
 class TaskDataset(Dataset):
