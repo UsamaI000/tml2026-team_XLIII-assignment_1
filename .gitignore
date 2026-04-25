@@ -34,3 +34,8 @@ dist/
 Thumbs.db
 
 data/
+
+# removing model and data files
+model.pt
+priv.pt
+pub.pt
