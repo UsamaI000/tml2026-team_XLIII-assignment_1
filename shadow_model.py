@@ -2,12 +2,22 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader, Subset
 import torchvision.transforms as transforms
+from torchvision.models import resnet18
+
 from collections import defaultdict
 from pathlib import Path
 from membership_dataset import MembershipDataset, ShadowDataset
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import roc_curve
+from sklearn.model_selection import StratifiedKFold
+import warnings
+warnings.filterwarnings("ignore")
 
 
 def make_stratified_shadow_splits(dataset, n_shadow=4, seed=42):
@@ -302,6 +312,192 @@ def build_attack_dataset(all_shadow_outputs):
     return {k: np.concatenate(v) for k, v in pooled.items()}
 
 
+# for attack model
+def build_features(outputs, mode="full"):
+    """
+    Constructs feature matrix from collected model outputs.
+
+    Modes:
+        "simple"  : just loss + confidence + entropy + margin (fast baseline)
+        "full"    : all scalar features
+        "with_probs" : full + raw softmax vector (9 extra dims, per-class signal)
+
+    Always call with the same mode for shadow outputs and target outputs.
+    """
+    loss       = outputs["loss"].reshape(-1, 1)
+    true_prob  = outputs["true_prob"].reshape(-1, 1)
+    confidence = outputs["confidence"].reshape(-1, 1)
+    entropy    = outputs["entropy"].reshape(-1, 1)
+    margin     = outputs["margin"].reshape(-1, 1)
+    correct    = outputs["correct"].reshape(-1, 1)
+
+    if mode == "simple":
+        return np.hstack([loss, confidence, entropy, margin])
+
+    if mode == "full":
+        return np.hstack([loss, true_prob, confidence, entropy, margin, correct])
+
+    if mode == "with_probs":
+        probs = outputs["probs"]                        # (N, 9)
+        return np.hstack([loss, true_prob, confidence,
+                          entropy, margin, correct, probs])
+
+    raise ValueError(f"Unknown mode: {mode}")
+
+
+# classifier for each class (9 labels)
+def train_attack_classifiers(attack_dataset, feature_mode="full", use_mlp=False):
+    """
+    Trains one attack classifier per class label (9 total).
+
+    For each class:
+        - filters attack_dataset to samples of that class
+        - scales features
+        - trains a logistic regression (or MLP) binary classifier
+        - evaluates TPR @ 5% FPR on the same data (training signal check)
+
+    Returns:
+        classifiers : dict {label -> fitted classifier}
+        scalers     : dict {label -> fitted scaler}
+    """
+    labels      = attack_dataset["labels"]
+    memberships = attack_dataset["memberships"]
+    features    = build_features(attack_dataset, mode=feature_mode)
+
+    classifiers = {}
+    scalers     = {}
+
+    for cls in range(9):
+        mask = labels == cls
+        X    = features[mask]
+        y    = memberships[mask]
+
+        if len(np.unique(y)) < 2:
+            print(f"  Class {cls}: skipping — only one membership class present")
+            continue
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        if use_mlp:
+            clf = MLPClassifier(
+                hidden_layer_sizes=(64, 32),
+                activation="relu",
+                max_iter=500,
+                random_state=42
+            )
+        else:
+            clf = LogisticRegression(
+                C=1.0,
+                max_iter=1000,
+                random_state=42
+            )
+
+        clf.fit(X_scaled, y)
+
+        # Quick training signal: TPR @ 5% FPR
+        probs      = clf.predict_proba(X_scaled)[:, 1]
+        tpr_at_fpr = compute_tpr_at_fpr(y, probs, fpr_threshold=0.05)
+
+        print(f"  Class {cls} | n={mask.sum():5d} "
+              f"| members={y.sum():4d} "
+              f"| TPR@5%FPR (train): {tpr_at_fpr:.4f}")
+
+        classifiers[cls] = clf
+        scalers[cls]     = scaler
+
+    return classifiers, scalers
+
+
+# cross-validated evaluation on the public dataset
+def evaluate_on_public(pub_ds_outputs, classifiers, scalers,
+                       feature_mode="full", n_folds=5):
+    """
+    Evaluates attack classifiers on the public dataset using
+    stratified k-fold cross-validation per class.
+
+    pub_ds_outputs: output dict from collect_outputs() run on pub_ds
+                    with the TARGET model (not shadow models)
+    """
+    labels      = pub_ds_outputs["labels"]
+    memberships = pub_ds_outputs["memberships"]
+    features    = build_features(pub_ds_outputs, mode=feature_mode)
+
+    all_scores  = np.zeros(len(labels))
+
+    for cls in range(9):
+        mask = labels == cls
+        X    = features[mask]
+        y    = memberships[mask]
+        idx  = np.where(mask)[0]
+
+        if cls not in classifiers:
+            # Fallback: use raw loss (negated, higher = more likely member)
+            all_scores[idx] = -X[:, 0]
+            continue
+
+        scaler = scalers[cls]
+        clf    = classifiers[cls]
+
+        X_scaled         = scaler.transform(X)
+        scores           = clf.predict_proba(X_scaled)[:, 1]
+        all_scores[idx]  = scores
+
+    overall_tpr = compute_tpr_at_fpr(memberships, all_scores, fpr_threshold=0.05)
+    print(f"\nOverall TPR@5%FPR on public dataset: {overall_tpr:.4f}")
+
+    # Per-class breakdown
+    for cls in range(9):
+        mask = labels == cls
+        if mask.sum() == 0:
+            continue
+        t = compute_tpr_at_fpr(memberships[mask], all_scores[mask], fpr_threshold=0.05)
+        print(f"  Class {cls}: TPR@5%FPR = {t:.4f}  (n={mask.sum()})")
+
+    return all_scores, overall_tpr
+
+
+def compute_tpr_at_fpr(y_true, y_scores, fpr_threshold=0.05):
+    """
+    Computes TPR at a given FPR threshold using the ROC curve.
+    This is the competition metric.
+    """
+    fpr, tpr, _ = roc_curve(y_true, y_scores)
+    # Find the TPR at the largest FPR that is still <= threshold
+    valid = fpr <= fpr_threshold
+    if not valid.any():
+        return 0.0
+    return tpr[valid].max()
+
+
+# inference on prvate dataset
+def predict_private(priv_outputs, classifiers, scalers, feature_mode="full"):
+    """
+    Produces membership scores for the private dataset.
+    Returns array of scores in [0, 1], one per sample, aligned with priv_outputs.
+    """
+    labels   = priv_outputs["labels"]
+    features = build_features(priv_outputs, mode=feature_mode)
+    scores   = np.zeros(len(labels))
+
+    for cls in range(9):
+        mask = labels == cls
+        if not mask.any():
+            continue
+
+        X = features[mask]
+
+        if cls not in classifiers:
+            scores[mask] = -X[:, 0]          # fallback: negated loss
+            continue
+
+        X_scaled      = scalers[cls].transform(X)
+        scores[mask]  = classifiers[cls].predict_proba(X_scaled)[:, 1]
+
+    return scores
+
+
+
 if __name__ == "__main__":
     # Quick local test (small subset)
 
@@ -311,6 +507,9 @@ if __name__ == "__main__":
 
     EPOCHS     = 10 if LOCAL_TEST else 50     # fewer epochs locally
     SAVE_DIR   = "shadow_checkpoints"
+
+    FEATURE_MODE = "full"      # try "with_probs" if results are weak
+    USE_MLP      = False       # flip to True to try a small neural attack model
 
     # config
     BASE = Path(__file__).parent
@@ -425,10 +624,50 @@ if __name__ == "__main__":
 
     attack_dataset = build_attack_dataset(all_shadow_outputs)
 
-    print(attack_dataset)
+    # print(attack_dataset)
 
-    print(f"\nAttack dataset size : {len(attack_dataset['labels'])}")
-    print(f"Members             : {attack_dataset['memberships'].sum()}")
-    print(f"Non-members         : {(1 - attack_dataset['memberships']).sum()}")
-    print(f"Mean loss  members  : {attack_dataset['loss'][attack_dataset['memberships'] == 1].mean():.4f}")
-    print(f"Mean loss  non-mem  : {attack_dataset['loss'][attack_dataset['memberships'] == 0].mean():.4f}")
+    # ------------------------------------------------------------------------------
+    # TRAINING ATTACK MODELS
+    print("Training attack classifiers...\n")
+    classifiers, scalers = train_attack_classifiers(
+        attack_dataset,
+        feature_mode=FEATURE_MODE,
+        use_mlp=USE_MLP
+    )
+
+
+    # -- Collect target model outputs on public dataset for validation
+    print("\nCollecting target model outputs on public dataset...")
+    # target_model = ...         # load your pretrained ResNet-18 here
+    print("Loading model...")
+    target_model = resnet18(weights=None)
+    target_model.conv1 = torch.nn.Conv2d(3, 64, 3, 1, 1, bias=False)
+    target_model.maxpool = torch.nn.Identity()
+    target_model.fc = torch.nn.Linear(512, 9)
+
+    target_model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
+    target_model.eval()
+
+    # target_model.eval()
+    pub_target_outputs = collect_outputs(target_model, DataLoader(pub_ds, batch_size=64), device)
+
+    print("\nEvaluating on public dataset...")
+    pub_scores, pub_tpr = evaluate_on_public(
+        pub_target_outputs, classifiers, scalers, feature_mode=FEATURE_MODE
+    )
+
+    # -- Collect target model outputs on private dataset
+    print("\nCollecting target model outputs on private dataset...")
+    priv_target_outputs = collect_outputs(target_model, DataLoader(priv_ds, batch_size=64), device)
+
+    priv_scores = predict_private(priv_target_outputs, classifiers, scalers, feature_mode=FEATURE_MODE)
+
+    # -- Build submission
+    import pandas as pd
+    submission = pd.DataFrame({
+        "id"    : priv_target_outputs["ids"],
+        "score" : priv_scores
+    })
+    submission.to_csv("submission.csv", index=False)
+    print(f"\nSubmission saved — {len(submission)} rows")
+    print(submission.head())
