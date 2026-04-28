@@ -39,3 +39,4 @@ data/
 model.pt
 priv.pt
 pub.pt
+shadow_checkpoints/

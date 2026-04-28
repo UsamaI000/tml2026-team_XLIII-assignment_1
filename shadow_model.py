@@ -5,6 +5,8 @@ import torchvision.transforms as transforms
 from collections import defaultdict
 from pathlib import Path
 from membership_dataset import MembershipDataset
+import torch.nn as nn
+import torchvision.models as models
 
 
 def make_stratified_shadow_splits(dataset, n_shadow=4, seed=42):
@@ -60,6 +62,116 @@ def make_shadow_dataset(dataset, indices, member_label):
     return ShadowDataset(dataset, indices, member_label)
 
 
+# TODO: do we need this as a separate function???
+def make_shadow_model(num_classes=9):
+    """
+    ResNet-18 matching the target model architecture.
+    Replaces the final FC layer for num_classes outputs.
+    """
+    model = models.resnet18(weights=None)          # no pretrained weights
+    model.fc = nn.Linear(model.fc.in_features, num_classes)
+    return model
+
+
+# TODO: this is running with some default settings - we need to try different hyperparams
+# train loop for ONE shadow model
+def train_shadow_model(train_loader, num_classes=9, epochs=50, lr=0.1, 
+                       momentum=0.9, weight_decay=5e-4, device=None):
+    """
+    Trains a single shadow model on the given train_loader.
+    Uses SGD + cosine LR schedule, standard for ResNet on small datasets.
+
+    Returns:
+        model (eval mode, on device)
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model = make_shadow_model(num_classes).to(device)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.SGD(
+        model.parameters(),
+        lr=lr,
+        momentum=momentum,
+        weight_decay=weight_decay
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=epochs
+    )
+
+    model.train()
+    for epoch in range(epochs):
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+        for batch in train_loader:
+            _, imgs, labels, _ = batch          # unpack (id, img, label, membership)
+            imgs, labels = imgs.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(imgs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item() * imgs.size(0)
+            correct += (outputs.argmax(1) == labels).sum().item()
+            total += imgs.size(0)
+
+        scheduler.step()
+
+        if (epoch + 1) % 10 == 0:
+            print(
+                f"  Epoch {epoch+1}/{epochs} "
+                f"| loss: {running_loss/total:.4f} "
+                f"| acc: {correct/total:.4f} "
+                f"| lr: {scheduler.get_last_lr()[0]:.5f}"
+            )
+
+    model.eval()
+    return model
+
+
+# training loop for ALL shadow models
+def train_all_shadow_models(shadow_loaders, num_classes=9, epochs=50,
+                            lr=0.1, save_dir=None):
+    """
+    Trains one shadow model per (train_loader, out_loader) pair.
+    Optionally saves each model checkpoint to save_dir.
+
+    Returns:
+        List of trained models (eval mode)
+    """
+    import os
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on: {device}\n")
+
+    trained_models = []
+
+    for i, (train_loader, out_loader) in enumerate(shadow_loaders):
+        print(f"----- Shadow model {i} -----")
+        model = train_shadow_model(
+            train_loader,
+            num_classes=num_classes,
+            epochs=epochs,
+            lr=lr,
+            device=device
+        )
+        trained_models.append(model)
+
+        if save_dir is not None:
+            os.makedirs(save_dir, exist_ok=True)
+            path = os.path.join(save_dir, f"shadow_{i}.pt")
+            torch.save(model.state_dict(), path)
+            print(f"  Saved - {path}")
+
+        print()
+
+    return trained_models
+
+
 class ShadowDataset(Dataset):
     """
     Wraps a MembershipDataset + index list.
@@ -85,6 +197,9 @@ if __name__ == "__main__":
     N_SHADOW      = 4      # use fewer locally, scale up on GPU machine
     LOCAL_TEST    = True   # flip to False on full run
     LOCAL_SUBSET  = 1000   # samples to use for local smoke test
+
+    EPOCHS     = 10 if LOCAL_TEST else 50     # fewer epochs locally
+    SAVE_DIR   = "shadow_checkpoints"
 
     # config
     BASE = Path(__file__).parent
@@ -171,17 +286,20 @@ if __name__ == "__main__":
         train_ds = make_shadow_dataset(working_ds, train_idx, member_label=1)
         out_ds   = make_shadow_dataset(working_ds, out_idx,   member_label=0)
 
+        # TODO: change batch_size while testing
         train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
         out_loader   = DataLoader(out_ds,   batch_size=64, shuffle=False)
 
         shadow_loaders.append((train_loader, out_loader))
         print(f"Shadow {i}: train={len(train_ds)}  out={len(out_ds)}")
 
-    print(shadow_loaders)
+    # ------------------------------------------------------------------------------
+    # MAIN CODE FOR TRAINING SHADOW MODELS
 
-    # Sanity check: verify class balance in first shadow split
-    from collections import Counter
-    train_labels = [int(working_ds[idx][2]) for idx in splits[0][0]]
-    out_labels   = [int(working_ds[idx][2]) for idx in splits[0][1]]
-    print("\nShadow 0 train class dist:", dict(sorted(Counter(train_labels).items())))
-    print("Shadow 0 out   class dist:", dict(sorted(Counter(out_labels).items())))
+    shadow_models = train_all_shadow_models(
+        shadow_loaders,
+        num_classes=9,
+        epochs=EPOCHS,
+        lr=0.1,
+        save_dir=SAVE_DIR
+    )
