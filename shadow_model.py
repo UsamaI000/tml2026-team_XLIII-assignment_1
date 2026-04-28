@@ -18,6 +18,7 @@ from sklearn.metrics import roc_curve
 from sklearn.model_selection import StratifiedKFold
 import warnings
 warnings.filterwarnings("ignore")
+import random
 
 
 def make_stratified_shadow_splits(dataset, n_shadow=4, seed=42):
@@ -97,7 +98,9 @@ def train_shadow_model(train_loader, num_classes=9, epochs=50, lr=0.1,
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+    
+    torch.manual_seed(RANDOM_SEED)
+    torch.cuda.manual_seed_all(RANDOM_SEED)
     model = make_shadow_model(num_classes).to(device)
 
     criterion = nn.CrossEntropyLoss()
@@ -379,13 +382,13 @@ def train_attack_classifiers(attack_dataset, feature_mode="full", use_mlp=False)
                 hidden_layer_sizes=(64, 32),
                 activation="relu",
                 max_iter=500,
-                random_state=42
+                random_state=RANDOM_SEED
             )
         else:
             clf = LogisticRegression(
                 C=1.0,
                 max_iter=1000,
-                random_state=42
+                random_state=RANDOM_SEED
             )
 
         clf.fit(X_scaled, y)
@@ -498,13 +501,16 @@ if __name__ == "__main__":
 
     N_SHADOW      = 4      # use fewer locally, scale up on GPU machine
     LOCAL_TEST    = True   # flip to False on full run
-    LOCAL_SUBSET  = 1000   # samples to use for local smoke test
+    LOCAL_SUBSET  = 500   # samples to use for local smoke test
+    # LOCAL_SUBSET  = 1000   # samples to use for local smoke test
 
     EPOCHS     = 10 if LOCAL_TEST else 50     # fewer epochs locally
     SAVE_DIR   = "shadow_checkpoints"
 
     FEATURE_MODE = "full"      # try "with_probs" if results are weak
     USE_MLP      = False       # flip to True to try a small neural attack model
+
+    RANDOM_SEED = 12
 
     # config
     BASE = Path(__file__).parent
@@ -529,6 +535,12 @@ if __name__ == "__main__":
     pub_ds.transform = transform
     priv_ds.transform = transform
 
+    random.seed(RANDOM_SEED)
+    np.random.seed(RANDOM_SEED)
+    torch.manual_seed(RANDOM_SEED)
+    torch.cuda.manual_seed_all(RANDOM_SEED)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark     = False
 
     # ------------------------------------------------------------------------------
 
@@ -582,7 +594,7 @@ if __name__ == "__main__":
     # MAIN CODE FOR SPLITTING DATASET FOR SHADOW MODELS
 
     # Build splits
-    splits = make_stratified_shadow_splits(working_ds, n_shadow=N_SHADOW, seed=42)
+    splits = make_stratified_shadow_splits(working_ds, n_shadow=N_SHADOW, seed=RANDOM_SEED)
 
     # get training and 'out' data for each shadow model
     # final list has len = n_shadow_models and a tuple for (in, out) at each index
@@ -592,7 +604,10 @@ if __name__ == "__main__":
         out_ds   = make_shadow_dataset(working_ds, out_idx,   member_label=0)
 
         # TODO: change batch_size while testing
-        train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
+        g = torch.Generator()
+        g.manual_seed(RANDOM_SEED)
+        train_loader = DataLoader(train_ds, batch_size=64, shuffle=True, generator=g)
+        # train_loader = DataLoader(train_ds, batch_size=64, shuffle=True)
         out_loader   = DataLoader(out_ds,   batch_size=64, shuffle=False)
 
         shadow_loaders.append((train_loader, out_loader))
@@ -644,8 +659,8 @@ if __name__ == "__main__":
     target_model.eval()
 
     # First 500 samples only for testing
-    pub_subset  = Subset(pub_ds,  range(500))
-    priv_subset = Subset(priv_ds, range(500))
+    pub_subset  = Subset(pub_ds,  range(100))
+    priv_subset = Subset(priv_ds, range(100))
     pub_ds = pub_subset
     priv_ds = priv_subset
 
