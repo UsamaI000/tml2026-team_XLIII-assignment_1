@@ -184,9 +184,10 @@ def train_all_shadow_models(shadow_loaders, num_classes=9, epochs=50,
 
 
 # extract outputs from one model over one loader
-def collect_outputs(model, loader, device):
+def collect_outputs(model, loader, device, has_membership=True):
     """
     Runs model over all batches in loader and collects per-sample signals.
+    has_membership: set to False for private dataset where membership is None
 
     Returns dict with:
         ids         : list of sample ids
@@ -209,56 +210,50 @@ def collect_outputs(model, loader, device):
 
     with torch.no_grad():
         for batch in loader:
-            ids, imgs, labels, memberships = batch
-            imgs, labels = imgs.to(device), labels.to(device)
+            if has_membership:
+                ids, imgs, labels, memberships = batch
+                all_memberships.append(memberships)
+            else:
+                ids, imgs, labels = batch[:3]   # ignore the None membership field
 
-            logits = model(imgs)                        # (B, C)
+            imgs, labels = imgs.to(device), labels.to(device)
+            logits = model(imgs)
 
             all_ids.extend(ids)
             all_labels.append(labels.cpu())
-            all_memberships.append(memberships)
             all_logits.append(logits.cpu())
 
-    # Concatenate everything
-    labels      = torch.cat(all_labels)                 # (N,)
-    memberships = torch.cat(all_memberships)            # (N,)
-    logits      = torch.cat(all_logits)                 # (N, C)
+    labels  = torch.cat(all_labels)
+    logits  = torch.cat(all_logits)
+    probs   = F.softmax(logits, dim=1)
 
-    # Derive signals from logits
-    probs       = F.softmax(logits, dim=1)              # (N, C)
+    loss        = F.cross_entropy(logits, labels, reduction='none')
+    true_prob   = probs[torch.arange(len(labels)), labels]
+    confidence  = probs.max(dim=1).values
+    entropy     = -(probs * (probs + 1e-9).log()).sum(dim=1)
+    top2        = probs.topk(2, dim=1).values
+    margin      = top2[:, 0] - top2[:, 1]
+    correct     = (logits.argmax(dim=1) == labels).float()
 
-    # Per-sample cross-entropy loss
-    loss = F.cross_entropy(logits, labels, reduction='none')   # (N,)
-
-    # Confidence: probability assigned to the true class
-    true_class_probs = probs[torch.arange(len(labels)), labels]   # (N,)
-
-    # Max softmax confidence (may differ from true class prob if prediction is wrong)
-    confidence  = probs.max(dim=1).values                         # (N,)
-
-    # Entropy of the output distribution
-    entropy     = -(probs * (probs + 1e-9).log()).sum(dim=1)      # (N,)
-
-    # Margin: gap between top-1 and top-2 probabilities
-    top2        = probs.topk(2, dim=1).values                     # (N, 2)
-    margin      = top2[:, 0] - top2[:, 1]                         # (N,)
-
-    # Correct prediction flag
-    correct     = (logits.argmax(dim=1) == labels).float()        # (N,)
-
-    return {
-        "ids"         : all_ids,
-        "labels"      : labels.numpy(),
-        "memberships" : memberships.numpy(),
-        "logits"      : logits.numpy(),
-        "probs"       : probs.numpy(),
-        "loss"        : loss.numpy(),
-        "true_prob"   : true_class_probs.numpy(),
-        "confidence"  : confidence.numpy(),
-        "entropy"     : entropy.numpy(),
-        "margin"      : margin.numpy(),
-        "correct"     : correct.numpy(),
+    result = {
+        "ids"        : all_ids,
+        "labels"     : labels.numpy(),
+        "logits"     : logits.numpy(),
+        "probs"      : probs.numpy(),
+        "loss"       : loss.numpy(),
+        "true_prob"  : true_prob.numpy(),
+        "confidence" : confidence.numpy(),
+        "entropy"    : entropy.numpy(),
+        "margin"     : margin.numpy(),
+        "correct"    : correct.numpy(),
     }
+
+    if has_membership:
+        result["memberships"] = torch.cat(all_memberships).numpy()
+    else:
+        result["memberships"] = np.zeros(len(labels), dtype=np.float32)  # dummy
+
+    return result
 
 
 # collect outputs from all shadow models
@@ -648,8 +643,14 @@ if __name__ == "__main__":
     target_model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
     target_model.eval()
 
-    # target_model.eval()
-    pub_target_outputs = collect_outputs(target_model, DataLoader(pub_ds, batch_size=64), device)
+    # First 500 samples only for testing
+    pub_subset  = Subset(pub_ds,  range(500))
+    priv_subset = Subset(priv_ds, range(500))
+    pub_ds = pub_subset
+    priv_ds = priv_subset
+
+    # pub_target_outputs = collect_outputs(target_model, DataLoader(pub_ds, batch_size=64), device)
+    pub_target_outputs  = collect_outputs(target_model, DataLoader(pub_ds,  batch_size=64), device, has_membership=True)
 
     print("\nEvaluating on public dataset...")
     pub_scores, pub_tpr = evaluate_on_public(
@@ -658,7 +659,15 @@ if __name__ == "__main__":
 
     # -- Collect target model outputs on private dataset
     print("\nCollecting target model outputs on private dataset...")
-    priv_target_outputs = collect_outputs(target_model, DataLoader(priv_ds, batch_size=64), device)
+    # priv_target_outputs = collect_outputs(target_model, DataLoader(priv_ds, batch_size=64), device)
+    
+    def collate_fn(batch):
+        ids, imgs, labels, _ = zip(*batch)
+        return list(ids), torch.stack(list(imgs)), torch.tensor(labels)
+
+    priv_loader = DataLoader(priv_ds, batch_size=64, shuffle=False, collate_fn=collate_fn)
+    priv_target_outputs = collect_outputs(target_model, priv_loader, device, has_membership=False)
+    # priv_target_outputs = collect_outputs(target_model, DataLoader(priv_ds, batch_size=64), device, has_membership=False)
 
     priv_scores = predict_private(priv_target_outputs, classifiers, scalers, feature_mode=FEATURE_MODE)
 
