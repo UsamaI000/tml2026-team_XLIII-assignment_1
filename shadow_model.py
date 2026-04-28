@@ -4,7 +4,7 @@ from torch.utils.data import Dataset, DataLoader, Subset
 import torchvision.transforms as transforms
 from collections import defaultdict
 from pathlib import Path
-from membership_dataset import MembershipDataset
+from membership_dataset import MembershipDataset, ShadowDataset
 import torch.nn as nn
 import torchvision.models as models
 
@@ -171,24 +171,6 @@ def train_all_shadow_models(shadow_loaders, num_classes=9, epochs=50,
 
     return trained_models
 
-
-class ShadowDataset(Dataset):
-    """
-    Wraps a MembershipDataset + index list.
-    Overrides the membership field with the shadow membership label.
-    """
-    def __init__(self, base_dataset, indices, member_label):
-        self.base    = base_dataset
-        self.indices = indices
-        self.member_label = member_label
-
-    def __len__(self):
-        return len(self.indices)
-
-    def __getitem__(self, idx):
-        real_idx = self.indices[idx]
-        id_, img, label, _ = self.base[real_idx]   # ignore original membership
-        return id_, img, label, self.member_label
 
 
 if __name__ == "__main__":
