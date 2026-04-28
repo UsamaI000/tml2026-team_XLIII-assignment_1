@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from membership_dataset import MembershipDataset, ShadowDataset
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.models as models
 
 
@@ -172,6 +173,134 @@ def train_all_shadow_models(shadow_loaders, num_classes=9, epochs=50,
     return trained_models
 
 
+# extract outputs from one model over one loader
+def collect_outputs(model, loader, device):
+    """
+    Runs model over all batches in loader and collects per-sample signals.
+
+    Returns dict with:
+        ids         : list of sample ids
+        labels      : (N,)  true class labels
+        memberships : (N,)  1 = member, 0 = non-member
+        logits      : (N, C) raw model outputs
+        probs       : (N, C) softmax probabilities
+        loss        : (N,)  per-sample cross-entropy loss
+        confidence  : (N,)  max softmax probability
+        entropy     : (N,)  entropy of softmax distribution
+        margin      : (N,)  top1 - top2 softmax probability
+        correct     : (N,)  1 if prediction == label, else 0
+    """
+    model.eval()
+
+    all_ids         = []
+    all_labels      = []
+    all_memberships = []
+    all_logits      = []
+
+    with torch.no_grad():
+        for batch in loader:
+            ids, imgs, labels, memberships = batch
+            imgs, labels = imgs.to(device), labels.to(device)
+
+            logits = model(imgs)                        # (B, C)
+
+            all_ids.extend(ids)
+            all_labels.append(labels.cpu())
+            all_memberships.append(memberships)
+            all_logits.append(logits.cpu())
+
+    # Concatenate everything
+    labels      = torch.cat(all_labels)                 # (N,)
+    memberships = torch.cat(all_memberships)            # (N,)
+    logits      = torch.cat(all_logits)                 # (N, C)
+
+    # Derive signals from logits
+    probs       = F.softmax(logits, dim=1)              # (N, C)
+
+    # Per-sample cross-entropy loss
+    loss = F.cross_entropy(logits, labels, reduction='none')   # (N,)
+
+    # Confidence: probability assigned to the true class
+    true_class_probs = probs[torch.arange(len(labels)), labels]   # (N,)
+
+    # Max softmax confidence (may differ from true class prob if prediction is wrong)
+    confidence  = probs.max(dim=1).values                         # (N,)
+
+    # Entropy of the output distribution
+    entropy     = -(probs * (probs + 1e-9).log()).sum(dim=1)      # (N,)
+
+    # Margin: gap between top-1 and top-2 probabilities
+    top2        = probs.topk(2, dim=1).values                     # (N, 2)
+    margin      = top2[:, 0] - top2[:, 1]                         # (N,)
+
+    # Correct prediction flag
+    correct     = (logits.argmax(dim=1) == labels).float()        # (N,)
+
+    return {
+        "ids"         : all_ids,
+        "labels"      : labels.numpy(),
+        "memberships" : memberships.numpy(),
+        "logits"      : logits.numpy(),
+        "probs"       : probs.numpy(),
+        "loss"        : loss.numpy(),
+        "true_prob"   : true_class_probs.numpy(),
+        "confidence"  : confidence.numpy(),
+        "entropy"     : entropy.numpy(),
+        "margin"      : margin.numpy(),
+        "correct"     : correct.numpy(),
+    }
+
+
+# collect outputs from all shadow models
+def collect_all_shadow_outputs(shadow_models, shadow_loaders, device):
+    """
+    For each shadow model, collects outputs from both its train loader
+    (members) and out loader (non-members).
+
+    Returns:
+        List of dicts, one per shadow model, each containing
+        'train' and 'out' output dicts.
+    """
+    all_outputs = []
+
+    for i, (model, (train_loader, out_loader)) in enumerate(
+        zip(shadow_models, shadow_loaders)
+    ):
+        print(f"Collecting outputs for shadow model {i}...")
+
+        train_outputs = collect_outputs(model, train_loader, device)
+        out_outputs   = collect_outputs(model, out_loader,   device)
+
+        print(f"  train samples : {len(train_outputs['labels'])}"
+              f"  |  out samples : {len(out_outputs['labels'])}")
+
+        all_outputs.append({"train": train_outputs, "out": out_outputs})
+
+    return all_outputs
+
+
+# pool all shadow outputs into one attack training dataset
+def build_attack_dataset(all_shadow_outputs):
+    """
+    Pools outputs from all shadow models into a single flat dataset
+    for training the attack model.
+
+    Returns dict with same keys as collect_outputs, plus 'memberships'
+    as the attack label (1 = member, 0 = non-member).
+    """
+    pooled = {k: [] for k in [
+        "labels", "memberships", "logits", "probs",
+        "loss", "true_prob", "confidence", "entropy", "margin", "correct"
+    ]}
+
+    for shadow_out in all_shadow_outputs:
+        for split in ("train", "out"):
+            d = shadow_out[split]
+            for k in pooled:
+                pooled[k].append(d[k])
+
+    return {k: np.concatenate(v) for k, v in pooled.items()}
+
 
 if __name__ == "__main__":
     # Quick local test (small subset)
@@ -285,3 +414,21 @@ if __name__ == "__main__":
         lr=0.1,
         save_dir=SAVE_DIR
     )
+
+    # ------------------------------------------------------------------------------
+    # GETTING OUTPUT FROM SHADOW MODELS
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    all_shadow_outputs = collect_all_shadow_outputs(
+        shadow_models, shadow_loaders, device
+    )
+
+    attack_dataset = build_attack_dataset(all_shadow_outputs)
+
+    print(attack_dataset)
+
+    print(f"\nAttack dataset size : {len(attack_dataset['labels'])}")
+    print(f"Members             : {attack_dataset['memberships'].sum()}")
+    print(f"Non-members         : {(1 - attack_dataset['memberships']).sum()}")
+    print(f"Mean loss  members  : {attack_dataset['loss'][attack_dataset['memberships'] == 1].mean():.4f}")
+    print(f"Mean loss  non-mem  : {attack_dataset['loss'][attack_dataset['memberships'] == 0].mean():.4f}")
