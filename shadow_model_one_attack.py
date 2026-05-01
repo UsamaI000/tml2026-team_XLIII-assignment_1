@@ -344,106 +344,157 @@ def build_features(outputs, mode="full"):
 
 
 # classifier for each class (9 labels)
+# def train_attack_classifiers(attack_dataset, feature_mode="full", use_mlp=False):
+#     """
+#     Trains one attack classifier per class label (9 total).
+
+#     For each class:
+#         - filters attack_dataset to samples of that class
+#         - scales features
+#         - trains a logistic regression (or MLP) binary classifier
+#         - evaluates TPR @ 5% FPR on the same data (training signal check)
+
+#     Returns:
+#         classifiers : dict {label -> fitted classifier}
+#         scalers     : dict {label -> fitted scaler}
+#     """
+#     labels      = attack_dataset["labels"]
+#     memberships = attack_dataset["memberships"]
+#     features    = build_features(attack_dataset, mode=feature_mode)
+
+#     classifiers = {}
+#     scalers     = {}
+
+#     for cls in range(9):
+#         mask = labels == cls
+#         X    = features[mask]
+#         y    = memberships[mask]
+
+#         if len(np.unique(y)) < 2:
+#             print(f"  Class {cls}: skipping — only one membership class present")
+#             continue
+
+#         scaler = StandardScaler()
+#         X_scaled = scaler.fit_transform(X)
+
+#         if use_mlp:
+#             clf = MLPClassifier(
+#                 hidden_layer_sizes=(64, 32),
+#                 activation="relu",
+#                 max_iter=500,
+#                 random_state=RANDOM_SEED
+#             )
+#         else:
+#             clf = LogisticRegression(
+#                 C=1.0,
+#                 max_iter=1000,
+#                 random_state=RANDOM_SEED
+#             )
+
+#         clf.fit(X_scaled, y)
+
+#         # Quick training signal: TPR @ 5% FPR
+#         probs      = clf.predict_proba(X_scaled)[:, 1]
+#         tpr_at_fpr = compute_tpr_at_fpr(y, probs, fpr_threshold=0.05)
+
+#         print(f"  Class {cls} | n={mask.sum():5d} "
+#               f"| members={y.sum():4d} "
+#               f"| TPR@5%FPR (train): {tpr_at_fpr:.4f}")
+
+#         classifiers[cls] = clf
+#         scalers[cls]     = scaler
+
+#     return classifiers, scalers
 def train_attack_classifiers(attack_dataset, feature_mode="full", use_mlp=False):
-    """
-    Trains one attack classifier per class label (9 total).
-
-    For each class:
-        - filters attack_dataset to samples of that class
-        - scales features
-        - trains a logistic regression (or MLP) binary classifier
-        - evaluates TPR @ 5% FPR on the same data (training signal check)
-
-    Returns:
-        classifiers : dict {label -> fitted classifier}
-        scalers     : dict {label -> fitted scaler}
-    """
     labels      = attack_dataset["labels"]
     memberships = attack_dataset["memberships"]
     features    = build_features(attack_dataset, mode=feature_mode)
 
-    classifiers = {}
-    scalers     = {}
+    scaler   = StandardScaler()
+    X_scaled = scaler.fit_transform(features)
 
-    for cls in range(9):
-        mask = labels == cls
-        X    = features[mask]
-        y    = memberships[mask]
+    if use_mlp:
+        clf = MLPClassifier(
+            hidden_layer_sizes=(64, 32),
+            activation="relu",
+            max_iter=500,
+            random_state=RANDOM_SEED
+        )
+    else:
+        clf = LogisticRegression(
+            C=1.0,
+            max_iter=1000,
+            random_state=RANDOM_SEED
+        )
 
-        if len(np.unique(y)) < 2:
-            print(f"  Class {cls}: skipping — only one membership class present")
-            continue
+    clf.fit(X_scaled, memberships)
 
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+    probs      = clf.predict_proba(X_scaled)[:, 1]
+    tpr_at_fpr = compute_tpr_at_fpr(memberships, probs, fpr_threshold=0.05)
+    print(f"  Global classifier | n={len(memberships)} "
+          f"| members={int(memberships.sum())} "
+          f"| TPR@5%FPR (train): {tpr_at_fpr:.4f}")
 
-        if use_mlp:
-            clf = MLPClassifier(
-                hidden_layer_sizes=(64, 32),
-                activation="relu",
-                max_iter=500,
-                random_state=RANDOM_SEED
-            )
-        else:
-            clf = LogisticRegression(
-                C=1.0,
-                max_iter=1000,
-                random_state=RANDOM_SEED
-            )
-
-        clf.fit(X_scaled, y)
-
-        # Quick training signal: TPR @ 5% FPR
-        probs      = clf.predict_proba(X_scaled)[:, 1]
-        tpr_at_fpr = compute_tpr_at_fpr(y, probs, fpr_threshold=0.05)
-
-        print(f"  Class {cls} | n={mask.sum():5d} "
-              f"| members={y.sum():4d} "
-              f"| TPR@5%FPR (train): {tpr_at_fpr:.4f}")
-
-        classifiers[cls] = clf
-        scalers[cls]     = scaler
-
-    return classifiers, scalers
+    return clf, scaler
 
 # cross-validated evaluation on the public dataset
-def evaluate_on_public(pub_ds_outputs, classifiers, scalers,
-                       feature_mode="full", n_folds=5):
-    """
-    Evaluates attack classifiers on the public dataset using
-    stratified k-fold cross-validation per class.
+# def evaluate_on_public(pub_ds_outputs, classifiers, scalers,
+#                        feature_mode="full", n_folds=5):
+#     """
+#     Evaluates attack classifiers on the public dataset using
+#     stratified k-fold cross-validation per class.
 
-    pub_ds_outputs: output dict from collect_outputs() run on pub_ds
-                    with the TARGET model (not shadow models)
-    """
-    labels      = pub_ds_outputs["labels"]
+#     pub_ds_outputs: output dict from collect_outputs() run on pub_ds
+#                     with the TARGET model (not shadow models)
+#     """
+#     labels      = pub_ds_outputs["labels"]
+#     memberships = pub_ds_outputs["memberships"]
+#     features    = build_features(pub_ds_outputs, mode=feature_mode)
+
+#     all_scores  = np.zeros(len(labels))
+
+#     for cls in range(9):
+#         mask = labels == cls
+#         X    = features[mask]
+#         y    = memberships[mask]
+#         idx  = np.where(mask)[0]
+
+#         if cls not in classifiers:
+#             # Fallback: use raw loss (negated, higher = more likely member)
+#             all_scores[idx] = -X[:, 0]
+#             continue
+
+#         scaler = scalers[cls]
+#         clf    = classifiers[cls]
+
+#         X_scaled         = scaler.transform(X)
+#         scores           = clf.predict_proba(X_scaled)[:, 1]
+#         all_scores[idx]  = scores
+
+#     overall_tpr = compute_tpr_at_fpr(memberships, all_scores, fpr_threshold=0.05)
+#     print(f"\nOverall TPR@5%FPR on public dataset: {overall_tpr:.4f}")
+
+#     # Per-class breakdown
+#     for cls in range(9):
+#         mask = labels == cls
+#         if mask.sum() == 0:
+#             continue
+#         t = compute_tpr_at_fpr(memberships[mask], all_scores[mask], fpr_threshold=0.05)
+#         print(f"  Class {cls}: TPR@5%FPR = {t:.4f}  (n={mask.sum()})")
+
+#     return all_scores, overall_tpr
+def evaluate_on_public(pub_ds_outputs, classifier, scaler, feature_mode="full"):
     memberships = pub_ds_outputs["memberships"]
     features    = build_features(pub_ds_outputs, mode=feature_mode)
 
-    all_scores  = np.zeros(len(labels))
-
-    for cls in range(9):
-        mask = labels == cls
-        X    = features[mask]
-        y    = memberships[mask]
-        idx  = np.where(mask)[0]
-
-        if cls not in classifiers:
-            # Fallback: use raw loss (negated, higher = more likely member)
-            all_scores[idx] = -X[:, 0]
-            continue
-
-        scaler = scalers[cls]
-        clf    = classifiers[cls]
-
-        X_scaled         = scaler.transform(X)
-        scores           = clf.predict_proba(X_scaled)[:, 1]
-        all_scores[idx]  = scores
+    X_scaled    = scaler.transform(features)
+    all_scores  = classifier.predict_proba(X_scaled)[:, 1]
 
     overall_tpr = compute_tpr_at_fpr(memberships, all_scores, fpr_threshold=0.05)
     print(f"\nOverall TPR@5%FPR on public dataset: {overall_tpr:.4f}")
 
-    # Per-class breakdown
+    # Per-class breakdown (just for diagnostics, still one global model)
+    labels = pub_ds_outputs["labels"]
     for cls in range(9):
         mask = labels == cls
         if mask.sum() == 0:
@@ -468,31 +519,34 @@ def compute_tpr_at_fpr(y_true, y_scores, fpr_threshold=0.05):
 
 
 # inference on prvate dataset
-def predict_private(priv_outputs, classifiers, scalers, feature_mode="full"):
-    """
-    Produces membership scores for the private dataset.
-    Returns array of scores in [0, 1], one per sample, aligned with priv_outputs.
-    """
-    labels   = priv_outputs["labels"]
+# def predict_private(priv_outputs, classifiers, scalers, feature_mode="full"):
+#     """
+#     Produces membership scores for the private dataset.
+#     Returns array of scores in [0, 1], one per sample, aligned with priv_outputs.
+#     """
+#     labels   = priv_outputs["labels"]
+#     features = build_features(priv_outputs, mode=feature_mode)
+#     scores   = np.zeros(len(labels))
+
+#     for cls in range(9):
+#         mask = labels == cls
+#         if not mask.any():
+#             continue
+
+#         X = features[mask]
+
+#         if cls not in classifiers:
+#             scores[mask] = -X[:, 0]          # fallback: negated loss
+#             continue
+
+#         X_scaled      = scalers[cls].transform(X)
+#         scores[mask]  = classifiers[cls].predict_proba(X_scaled)[:, 1]
+
+#     return scores
+def predict_private(priv_outputs, classifier, scaler, feature_mode="full"):
     features = build_features(priv_outputs, mode=feature_mode)
-    scores   = np.zeros(len(labels))
-
-    for cls in range(9):
-        mask = labels == cls
-        if not mask.any():
-            continue
-
-        X = features[mask]
-
-        if cls not in classifiers:
-            scores[mask] = -X[:, 0]          # fallback: negated loss
-            continue
-
-        X_scaled      = scalers[cls].transform(X)
-        scores[mask]  = classifiers[cls].predict_proba(X_scaled)[:, 1]
-
-    return scores
-
+    X_scaled = scaler.transform(features)
+    return classifier.predict_proba(X_scaled)[:, 1]
 
 
 if __name__ == "__main__":
