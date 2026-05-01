@@ -24,6 +24,7 @@ dist/
 # Logs and local runtime files
 *.log
 *.tmp
+runlogs/
 
 # Editor/IDE settings
 .vscode/
@@ -39,3 +40,7 @@ data/
 model.pt
 priv.pt
 pub.pt
+shadow_checkpoints/
+
+# ignore mia.sub for cluster
+mia.sub
