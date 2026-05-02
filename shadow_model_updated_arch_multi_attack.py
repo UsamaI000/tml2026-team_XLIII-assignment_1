@@ -504,14 +504,14 @@ def predict_private(priv_outputs, classifiers, scalers, feature_mode="full"):
 
 
 if __name__ == "__main__":
-    N_SHADOW     = 128     # use fewer locally, scale up on GPU machine
+    N_SHADOW     = 70     # use fewer locally, scale up on GPU machine
     EPOCHS       = 25
     SAVE_DIR     = "shadow_checkpoints"
     FEATURE_MODE = "full"      # try "with_probs" if results are weak
     USE_MLP      = True       # flip to True to try a small neural attack model
     # USE_MLP      = False       # flip to True to try a small neural attack model
 
-    RANDOM_SEED  = 48
+    RANDOM_SEED  = 12
 
     # config
     BASE = Path(__file__).parent
