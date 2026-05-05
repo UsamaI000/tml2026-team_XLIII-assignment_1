@@ -88,19 +88,6 @@ model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
 model.eval()
 
 
-# # create random submission (remove this later or it will rewrite your actual submission)
-# print("Creating random submission...")
-# ids = [str(i) for i in priv_ds.ids]
-
-# df = pd.DataFrame({
-#     "id": ids,
-#     "score": [random.random() for _ in ids]
-# })
-
-# df.to_csv(OUTPUT_CSV, index=False)
-# print("Saved:", OUTPUT_CSV)
-
-# loading submission (remove this later or it will rewrite your actual submission)
 df = pd.read_csv(OUTPUT_CSV)
 print("Loaded existing submission:", df.head(2))
 

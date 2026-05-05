@@ -1,6 +1,6 @@
 from torch.utils.data import Dataset
 
-# dataset classes
+
 class TaskDataset(Dataset):
     def __init__(self, transform=None):
         self.ids = []
