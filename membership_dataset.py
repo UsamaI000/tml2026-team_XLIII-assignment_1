@@ -28,3 +28,22 @@ class MembershipDataset(TaskDataset):
     def __getitem__(self, index):
         id_, img, label = super().__getitem__(index)
         return id_, img, label, self.membership[index]
+
+
+class ShadowDataset(Dataset):
+    """
+    Wraps a MembershipDataset + index list.
+    Overrides the membership field with the shadow membership label.
+    """
+    def __init__(self, base_dataset, indices, member_label):
+        self.base    = base_dataset
+        self.indices = indices
+        self.member_label = member_label
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx):
+        real_idx = self.indices[idx]
+        id_, img, label, _ = self.base[real_idx]   # ignore original membership
+        return id_, img, label, self.member_label
