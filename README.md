@@ -24,7 +24,7 @@ You can copy `env.example` and replace the placeholder value.
 Run the multi-attack approach with shadow models:
 
 ```bash
-python shadow_model_updated_arch_multi_attack.py
+python shadow_model.py
 ```
 
 ### Configuration (in `shadow_model.py`)
