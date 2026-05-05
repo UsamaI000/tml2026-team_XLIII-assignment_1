@@ -1,24 +1,26 @@
-import torch
-import numpy as np
-from torch.utils.data import Dataset, DataLoader, Subset
-import torchvision.transforms as transforms
-from torchvision.models import resnet18
-
+import random
+import warnings
 from collections import defaultdict
 from pathlib import Path
-from membership_dataset import MembershipDataset, ShadowDataset
+
+import numpy as np
+import pandas as pd
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
-
+import torchvision.transforms as transforms
+from torchvision.models import resnet18
+from torch.utils.data import Dataset, DataLoader, Subset
 from sklearn.linear_model import LogisticRegression
-from sklearn.neural_network import MLPClassifier
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import roc_curve
 from sklearn.model_selection import StratifiedKFold
-import warnings
+from sklearn.neural_network import MLPClassifier
+from sklearn.preprocessing import StandardScaler
+
+from membership_dataset import MembershipDataset, ShadowDataset
+
 warnings.filterwarnings("ignore")
-import random
 
 
 def make_stratified_shadow_splits(dataset, n_shadow=4, seed=42):
@@ -80,12 +82,7 @@ def make_shadow_model(num_classes=9):
     ResNet-18 matching the target model architecture.
     Replaces the final FC layer for num_classes outputs.
     """
-    # model = models.resnet18(weights=None)          # no pretrained weights
-    # model.fc = nn.Linear(model.fc.in_features, num_classes)
-    # return model
     model = models.resnet18(weights=None)
-    
-    # Match target model changes
     model.conv1 = nn.Conv2d(3, 64, 3, 1, 1, bias=False)
     model.maxpool = nn.Identity()
     model.fc = nn.Linear(512, num_classes)
@@ -93,7 +90,6 @@ def make_shadow_model(num_classes=9):
     return model
 
 
-# TODO: this is running with some default settings - we need to try different hyperparams
 # train loop for ONE shadow model
 def train_shadow_model(train_loader, num_classes=9, epochs=50, lr=0.1, 
                        momentum=0.9, weight_decay=5e-4, device=None):
@@ -221,6 +217,7 @@ def collect_outputs(model, loader, device, has_membership=True):
 
     with torch.no_grad():
         for batch in loader:
+            # to handle private data in the same function
             if has_membership:
                 ids, imgs, labels, memberships = batch
                 all_memberships.append(memberships)
@@ -318,7 +315,7 @@ def build_attack_dataset(all_shadow_outputs):
     return {k: np.concatenate(v) for k, v in pooled.items()}
 
 
-# for attack model
+# getting fearures for attack model
 def build_features(outputs, mode="full"):
     """
     Constructs feature matrix from collected model outputs.
@@ -345,8 +342,7 @@ def build_features(outputs, mode="full"):
 
     if mode == "with_probs":
         probs = outputs["probs"]                        # (N, 9)
-        return np.hstack([loss, true_prob, confidence,
-                          entropy, margin, correct, probs])
+        return np.hstack([loss, true_prob, confidence, entropy, margin, correct, probs])
 
     raise ValueError(f"Unknown mode: {mode}")
 
@@ -415,8 +411,7 @@ def train_attack_classifiers(attack_dataset, feature_mode="full", use_mlp=False)
     return classifiers, scalers
 
 # cross-validated evaluation on the public dataset
-def evaluate_on_public(pub_ds_outputs, classifiers, scalers,
-                       feature_mode="full", n_folds=5):
+def evaluate_on_public(pub_ds_outputs, classifiers, scalers, feature_mode="full", n_folds=5):
     """
     Evaluates attack classifiers on the public dataset using
     stratified k-fold cross-validation per class.
@@ -504,22 +499,18 @@ def predict_private(priv_outputs, classifiers, scalers, feature_mode="full"):
 
 
 if __name__ == "__main__":
-    N_SHADOW     = 70     # use fewer locally, scale up on GPU machine
+    N_SHADOW     = 70
     EPOCHS       = 25
     SAVE_DIR     = "shadow_checkpoints"
-    FEATURE_MODE = "full"      # try "with_probs" if results are weak
-    USE_MLP      = True       # flip to True to try a small neural attack model
-    # USE_MLP      = False       # flip to True to try a small neural attack model
-
+    FEATURE_MODE = "full"
+    USE_MLP      = False    # for attack model
     RANDOM_SEED  = 12
 
-    # config
     BASE = Path(__file__).parent
     PUB_PATH = BASE / "pub.pt"
     PRIV_PATH = BASE / "priv.pt"
     MODEL_PATH = BASE / "model.pt"
-    OUTPUT_CSV = BASE / f"multi_attack_updated_arch_{N_SHADOW}m_{EPOCHS}e.csv"
-    # OUTPUT_CSV = BASE / "submission.csv"
+    OUTPUT_CSV = BASE / f"multi_attack_{N_SHADOW}m_{EPOCHS}e.csv"
 
     print("Loading datasets...")
     pub_ds = torch.load(PUB_PATH, weights_only=False)
@@ -545,24 +536,18 @@ if __name__ == "__main__":
     torch.backends.cudnn.benchmark     = False
 
     # ------------------------------------------------------------------------------
-
-    working_ds = pub_ds
-
-    # ------------------------------------------------------------------------------
-
-    # MAIN CODE FOR SPLITTING DATASET FOR SHADOW MODELS
+    # SPLITTING DATASET FOR SHADOW MODELS
 
     # Build splits
-    splits = make_stratified_shadow_splits(working_ds, n_shadow=N_SHADOW, seed=RANDOM_SEED)
+    splits = make_stratified_shadow_splits(pub_ds, n_shadow=N_SHADOW, seed=RANDOM_SEED)
 
     # get training and 'out' data for each shadow model
     # final list has len = n_shadow_models and a tuple for (in, out) at each index
     shadow_loaders = []
     for i, (train_idx, out_idx) in enumerate(splits):
-        train_ds = make_shadow_dataset(working_ds, train_idx, member_label=1)
-        out_ds   = make_shadow_dataset(working_ds, out_idx,   member_label=0)
+        train_ds = make_shadow_dataset(pub_ds, train_idx, member_label=1)
+        out_ds   = make_shadow_dataset(pub_ds, out_idx,   member_label=0)
 
-        # TODO: change batch_size while testing
         g = torch.Generator()
         g.manual_seed(RANDOM_SEED)
         train_loader = DataLoader(train_ds, batch_size=64, shuffle=True, generator=g)
@@ -572,7 +557,7 @@ if __name__ == "__main__":
         print(f"Shadow {i}: train={len(train_ds)}  out={len(out_ds)}")
 
     # ------------------------------------------------------------------------------
-    # MAIN CODE FOR TRAINING SHADOW MODELS
+    # TRAINING SHADOW MODELS
 
     shadow_models = train_all_shadow_models(
         shadow_loaders,
@@ -601,7 +586,8 @@ if __name__ == "__main__":
         use_mlp=USE_MLP
     )
 
-    # -- Collect target model outputs on public dataset for validation
+    # ------------------------------------------------------------------------------
+    # Collect target model outputs on public dataset for validation
     print("\nCollecting target model outputs on public dataset...")
     print("Loading model...")
     target_model = resnet18(weights=None)
@@ -619,7 +605,8 @@ if __name__ == "__main__":
         pub_target_outputs, classifiers, scalers, feature_mode=FEATURE_MODE
     )
 
-    # -- Collect target model outputs on private dataset
+    # ------------------------------------------------------------------------------
+    # Collect target model outputs on private dataset
     print("\nCollecting target model outputs on private dataset...")
     
     def collate_fn(batch):
@@ -630,13 +617,14 @@ if __name__ == "__main__":
     priv_target_outputs = collect_outputs(target_model, priv_loader, device, has_membership=False)
 
     priv_scores = predict_private(priv_target_outputs, classifiers, scalers, feature_mode=FEATURE_MODE)
-
-    # -- Build submission
-    import pandas as pd
+    
+    # ------------------------------------------------------------------------------
+    # Build submission csv
     submission = pd.DataFrame({
         "id"    : priv_target_outputs["ids"],
         "score" : priv_scores
     })
+
     submission.to_csv(OUTPUT_CSV, index=False)
     print(f"\nSubmission saved — {len(submission)} rows")
     print(OUTPUT_CSV)
