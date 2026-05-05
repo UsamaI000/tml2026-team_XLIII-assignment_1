@@ -50,4 +50,3 @@ To submit the generated CSV:
 python task_template.py  # modify to use the generated CSV
 ```
 
-Or submit directly via the API after updating your script with the submission file path.
