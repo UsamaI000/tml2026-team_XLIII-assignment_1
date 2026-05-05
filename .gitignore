@@ -9,6 +9,7 @@ venv/
 env/
 
 .env
+models/
 
 # Tooling caches
 .pytest_cache/
