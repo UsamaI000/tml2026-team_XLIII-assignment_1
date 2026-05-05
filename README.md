@@ -27,7 +27,7 @@ Run the multi-attack approach with shadow models:
 python shadow_model_updated_arch_multi_attack.py
 ```
 
-### Configuration (in `shadow_model_updated_arch_multi_attack.py`)
+### Configuration (in `shadow_model.py`)
 
 The best results use these settings:
 - **N_SHADOW**: 70 shadow models
@@ -38,7 +38,7 @@ The best results use these settings:
 
 ### Output
 
-The script generates `multi_attack_updated_arch_70m_25e.csv` containing:
+The script generates `multi_attack_70m_25e.csv` containing:
 - `id`: sample identifier
 - `score`: membership probability (0 = non-member, 1 = member)
 
