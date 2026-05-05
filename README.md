@@ -1,16 +1,6 @@
 # Assignment 1 - Membership Inference Attack (MIA)
 
-This repository contains starter files for Assignment 1 (MIA).
-
-## Repository Structure
-
-- `task_template.py`: starter script for loading data/model, generating a submission CSV, and submitting it.
-- `env.example`: example environment variable file.
-- `data/pub.pt`: public dataset.
-- `data/priv.pt`: private dataset used for scoring.
-- `data/model.pt`: target model weights.
-- `data/submission.csv`: generated submission file.
-- `Tutorial 1 - Assignment 1 Walkthrough.html`: walkthrough/reference material.
+Best Results: Multi-Attack with 70 Shadow Models (25 Epochs, MLP Classifier)
 
 ## Setup
 
@@ -18,7 +8,7 @@ This repository contains starter files for Assignment 1 (MIA).
 2. Install dependencies:
 
 ```bash
-pip install torch torchvision pandas requests python-dotenv
+pip install torch torchvision pandas numpy scikit-learn requests python-dotenv
 ```
 
 3. Create a `.env` file in the project root and add your API key:
@@ -29,26 +19,35 @@ API_KEY=your_api_key_here
 
 You can copy `env.example` and replace the placeholder value.
 
-## Run
+## Recreate Best Results
 
-From the project root:
+Run the multi-attack approach with shadow models:
 
 ```bash
-python task_template.py
+python shadow_model_updated_arch_multi_attack.py
 ```
 
-The script will:
+### Configuration (in `shadow_model_updated_arch_multi_attack.py`)
 
-1. Load datasets and model.
-2. Create a `data/submission.csv` file.
-3. Submit the CSV to the remote server.
+The best results use these settings:
+- **N_SHADOW**: 70 shadow models
+- **EPOCHS**: 25 epochs per model
+- **USE_MLP**: True (neural network attack classifier)
+- **FEATURE_MODE**: "full" (all features including logits, probs, loss, entropy, margin)
+- **RANDOM_SEED**: 12
 
-## Important Note
+### Output
 
-`task_template.py` currently creates a random submission score for each sample as a placeholder. Replace this logic with your actual attack/scoring method before final submission.
+The script generates `multi_attack_updated_arch_70m_25e.csv` containing:
+- `id`: sample identifier
+- `score`: membership probability (0 = non-member, 1 = member)
 
-## Troubleshooting
+### Submission
 
-- If submission fails, verify `API_KEY` is present in `.env`.
-- Ensure all files in `data/` exist and are not moved/renamed.
-- If Python cannot import packages, re-check that your virtual environment is active.
+To submit the generated CSV:
+
+```bash
+python task_template.py  # modify to use the generated CSV
+```
+
+Or submit directly via the API after updating your script with the submission file path.
